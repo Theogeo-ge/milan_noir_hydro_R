@@ -1,0 +1,166 @@
+library(sf)
+library(dplyr)
+library(mapview)
+library(ggplot2)
+library(leaflet)
+library(viridis)
+library(ggforce)
+install.packages("viridis")
+install.packages("ggforce")
+
+atlas <- st_read("C:/Users/User/Downloads/FFP_ATLAS_LUGRIN_TERRITOIRES/FFP_ATLAS_LUGRIN_TERRITOIRES.shp")
+
+milieu <- st_read("C:/Users/User/Downloads/SIPV_MN_CARTO_5-SHP/SIPV_MN_CARTO_5.shp")
+milieu_sim <- st_read("C:/Users/User/Downloads/SIPV_MN_CARTO_100-SHP/SIPV_MN_CARTO_100.shp")
+hydro <- st_read("C:/Users/User/Downloads/LCE_GRAPHE_EAU-SHP/LCE_GRAPHE_EAU.shp")
+
+table(milieu$CAT_MN_5)
+table(atlas$ESPECE)
+names(atlas)
+
+atlas_mn <- atlas %>% 
+  filter (ESPECE == "Milan noir")
+
+point_milan <- st_centroid(atlas_mn)
+
+join <- st_join(point_milan, milieu)
+
+join2 <- st_join(point_milan, milieu_sim)
+table(join2$CAT_MN_100)
+
+hydro_buf <- hydro %>%
+  st_buffer(dist = 500) %>%
+  st_union()
+
+res <- st_filter(point_milan, hydro_buf)
+
+prox <- st_is_within_distance(point_milan, hydro, dist = 500)
+nids_proches <- point_milan[lengths(prox) > 0, ]
+
+# Calcul de la distance minimale entre chaque nid et le réseau hydro
+point_milan$dist_eau <- st_distance(point_milan, hydro) %>% 
+  apply(1, min) %>% 
+  as.numeric()  # conversion en m
+
+point_milan <- point_milan %>%
+  mutate(
+    classe_dist = cut(
+      dist_eau,
+      breaks = c(0, 50, 100, 250, 500, 1000, Inf),
+      labels = c("0–50 m", "50–100 m", "100–250 m", "250–500 m", "500–1000 m", ">1000 m"),
+      include.lowest = TRUE
+    )
+  )
+
+
+
+ggplot() +
+  geom_sf(data = hydro, color = "#2196F3", size = 0.6, alpha = 0.7) +
+  geom_sf(data = point_milan, aes(color = dist_eau), size = 1.8, alpha = 0.8) +
+  scale_color_viridis_c(
+    option = "magma",   # ou "plasma", "viridis", "turbo"
+    direction = -1,
+    name = "Distance à l’eau (m)"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "gray15"),
+    plot.background = element_rect(fill = "gray15"),
+    panel.grid = element_blank(),
+    text = element_text(color = "white"),
+    legend.position = "right",
+    plot.title = element_text(size = 8, face = "bold", color = "#FFD54F")
+  ) +
+  labs(
+    title = "Proximité des nids de Milan noir par rapport aux cours d’eau",
+    subtitle = "Couleur selon la distance au réseau hydrographique"
+  )
+
+
+## leaflet version -----------------------------
+
+pal <- colorNumeric(
+  palette = inferno(256),  # ou viridis(), plasma(), turbo()
+  domain = point_milan$dist_eau,
+  reverse = TRUE
+)
+
+nids_points_wgs <- st_transform(point_milan, 4326)
+hydro_wgs <- st_transform(hydro, 4326)
+
+leaflet() %>%
+  addProviderTiles("CartoDB.DarkMatter") %>%
+  
+  addPolylines(
+    data = hydro_wgs,
+    color = "#4FC3F7",
+    weight = 2,
+    opacity = 0.7
+  ) %>%
+  
+  addCircleMarkers(
+    data = nids_points_wgs,
+    radius = 4,
+    color = ~pal(dist_eau),
+    stroke = FALSE,
+    fillOpacity = 0.8,
+    label = ~paste0("Distance à l’eau : ", round(dist_eau, 0), " m")
+  ) %>%
+  
+  addLegend(
+    position = "bottomright",
+    pal = pal,
+    values = nids_points_wgs$dist_eau,
+    title = "Distance à l’eau (m)",
+    labFormat = labelFormat(suffix = " m"),
+    opacity = 0.8
+  )
+
+## graphique ------------------------
+
+dist_data <- point_milan %>%
+  st_drop_geometry() %>%
+  count(classe_dist)
+cols <- inferno(length(unique(dist_data$classe_dist)), direction = -1)
+names(cols) <- levels(dist_data$classe_dist)
+
+dist_data <- dist_data %>%
+  mutate(pct = n / sum(n) * 100)
+
+##donut -----------------------
+
+ggplot(dist_data, aes(x = 2, y = pct, fill = classe_dist)) +
+  geom_bar(stat = "identity", width = 1, color = "gray20") +
+  coord_polar(theta = "y", start = 0) +
+  xlim(0.5, 2.5) +
+  scale_fill_manual(values = cols, name = "Distance à l’eau") + 
+  geom_text(
+    aes(label = paste0(round(pct, 1), "%")),
+    position = position_stack(vjust = 0.5),
+    color = "black", size = 3.8, fontface = "bold"
+  ) +
+  theme_void() +
+  theme(
+    plot.background = element_rect(fill = "gray15", color = NA),
+    legend.position = "right",      
+    text = element_text(color = "white"),
+    legend.title = element_text(face = "bold", color = "#FFD54F")
+  ) +
+  labs(
+    title = "Répartition des nids selon la distance aux cours d’eau"
+  ) +
+  annotate(
+    "text", x = 0, y = 0,
+    label = "Milan noir",
+    color = "white",
+    size = 5,
+    fontface = "bold"
+  )
+## Visualisation cartographique
+
+mapview(atlas_mn) + mapview(milieu)
+mapview(atlas)
+mapview(point_milan) + mapview(hydro_buf) + mapview(hydro)
+
+
+
